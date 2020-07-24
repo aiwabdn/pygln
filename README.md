@@ -191,6 +191,8 @@ GLN.predict(input: np.ndarray,
 
 Predict the class for the given inputs, and optionally update the weights.
 
+> **PyTorch** implementation takes `torch.Tensor`s (on the same device as the model) as parameters.
+
 **Args:**
 
 - **input** (*np.array[B, N]*): Batch of B N-dim float input vectors.
