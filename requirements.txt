@@ -1,0 +1,11 @@
+jax
+jaxlib
+jupyter
+numpy
+pandas
+scikit-learn
+scipy
+tensorflow
+torch
+torchvision
+tqdm
