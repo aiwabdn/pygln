@@ -4,9 +4,9 @@ import unittest
 class TestReadme(unittest.TestCase):
 
     def test_readme(self):
-        from pygln.utils import get_mnist
+        from pygln import utils
 
-        X_train, y_train, X_test, y_test = get_mnist()
+        X_train, y_train, X_test, y_test = utils.get_mnist()
 
 
         y_train_3 = (y_train == 3)
@@ -27,7 +27,7 @@ class TestReadme(unittest.TestCase):
 
 
         for n in range(X_train.shape[0]):
-            pred = model_3.predict(input=X_train[n:n+1], target=y_train_3[n:n+1])
+            pred = model_3.predict(X_train[n:n+1], target=y_train_3[n:n+1])
 
 
         preds = []
@@ -48,7 +48,7 @@ class TestReadme(unittest.TestCase):
                     num_classes=10, learning_rate=1e-4)
 
         for n in range(X_train.shape[0]):
-            model.predict(input=X_train[n:n+1], target=y_train[n:n+1])
+            model.predict(X_train[n:n+1], target=y_train[n:n+1])
 
         preds = []
         for n in range(X_test.shape[0]):
@@ -57,15 +57,15 @@ class TestReadme(unittest.TestCase):
         accuracy_score(y_test, np.vstack(preds))
 
 
-        from pygln.utils import evaluate_mnist
+        from pygln import utils
 
         model_3 = GLN(backend='numpy', layer_sizes=[4, 4, 1], input_size=784,
                       learning_rate=1e-4)
 
-        print(evaluate_mnist(model_3, mnist_class=3, batch_size=4))
+        print(utils.evaluate_mnist(model_3, mnist_class=3, batch_size=4))
 
 
         model = GLN(backend='numpy', layer_sizes=[4, 4, 1], input_size=784,
                     num_classes=10, learning_rate=1e-4)
 
-        print(evaluate_mnist(model, batch_size=4))
+        print(utils.evaluate_mnist(model, batch_size=4))

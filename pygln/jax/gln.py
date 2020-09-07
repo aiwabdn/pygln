@@ -2,12 +2,12 @@ import jax
 from jax import lax, nn as jnn, numpy as jnp, random as jnr, scipy as jsp
 from numpy import ndarray
 from random import randrange
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional, Sequence, Union
 
-from pygln.base import GLNBase
+from ..base import GLNBase
+
 
 jax.config.update("jax_debug_nans", True)
-jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_numpy_rank_promotion", "raise")
 
 
@@ -64,7 +64,7 @@ class Linear(OnlineUpdateModule):
         super().__init__(learning_rate, pred_clipping, weight_clipping)
 
         assert size > 0 and input_size > 0 and context_size > 0
-        assert context_map_size >= 2
+        assert context_map_size >= 1
         assert num_classes >= 2
 
         self.size = size
@@ -195,37 +195,38 @@ class GLN(GLNBase):
     JAX implementation of Gated Linear Networks (https://arxiv.org/abs/1910.01526).
 
     Args:
-        layer_sizes (list[int >= 1]): List of layer output sizes.
+        layer_sizes (list[int >= 1]): List of layer output sizes, excluding last classification
+            layer which is added implicitly.
         input_size (int >= 1): Input vector size.
-        context_map_size (int >= 1): Context dimension, i.e. number of context halfspaces.
         num_classes (int >= 2): For values >2, turns GLN into a multi-class classifier by internally
-            creating N one-vs-all binary GLN classifiers and return the argmax as output class.
-        base_predictor (np.array[n] -> np.array[k]): If given, maps the n-dim input vector to a
-            corresponding k-dim vector of base predictions (could be a constant prior), instead of
+            creating a one-vs-all binary GLN classifier per class and return the argmax as output.
+        context_map_size (int >= 1): Context dimension, i.e. number of context halfspaces.
+        bias (bool): Whether to add a bias prediction in each layer.
+        context_bias (bool): Whether to use a random non-zero bias for context halfspace gating.
+        base_predictor (np.array[N] -> np.array[K]): If given, maps the N-dim input vector to a
+            corresponding K-dim vector of base predictions (could be a constant prior), instead of
             simply using the clipped input vector itself.
         learning_rate (float > 0.0): Update learning rate.
         pred_clipping (0.0 < float < 0.5): Clip predictions into [p, 1 - p] at each layer.
         weight_clipping (float > 0.0): Clip weights into [-w, w] after each update.
-        bias (bool): Whether to add a bias prediction in each layer.
-        context_bias (bool): Whether to use a random non-zero bias for context halfspace gating.
         seed (int): Random seed.
     """
     def __init__(self,
                  layer_sizes: Sequence[int],
                  input_size: int,
-                 context_map_size: int = 4,
                  num_classes: int = 2,
+                 context_map_size: int = 4,
+                 bias: bool = True,
+                 context_bias: bool = False,
                  base_predictor: Optional[Callable[[ndarray], ndarray]] = None,
-                 learning_rate: float = 1e-4,
+                 learning_rate: Union[float, DynamicParameter] = 1e-3,
                  pred_clipping: float = 1e-3,
                  weight_clipping: float = 5.0,
-                 bias: bool = True,
-                 context_bias: bool = True,
                  seed: Optional[int] = None):
 
-        super().__init__(layer_sizes, input_size, context_map_size,
-                         num_classes, base_predictor, learning_rate,
-                         pred_clipping, weight_clipping, bias, context_bias)
+        super().__init__(layer_sizes, input_size, num_classes,
+                         context_map_size, bias, context_bias, base_predictor,
+                         learning_rate, pred_clipping, weight_clipping)
 
         # Learning rate as dynamic parameter
         if self.learning_rate == 'paper':
@@ -244,9 +245,9 @@ class GLN(GLNBase):
         # Initialize layers
         self.layers = list()
         self.params['rng'], *rngs = jnr.split(key=self.params['rng'],
-                                              num=(len(self.layer_sizes) + 1))
+                                              num=(len(self.layer_sizes) + 2))
         previous_size = self.base_pred_size
-        for n, (size, rng) in enumerate(zip(self.layer_sizes, rngs)):
+        for n, (size, rng) in enumerate(zip(self.layer_sizes + (1,), rngs)):
             layer = Linear(size=size,
                            input_size=previous_size,
                            context_size=self.input_size,
@@ -262,13 +263,14 @@ class GLN(GLNBase):
             previous_size = size
 
         # JAX-compiled predict function
-        self._jax_predict = jax.jit(fun=self._predict, static_argnums=(3, ))
+        self._jax_predict = jax.jit(fun=self._predict, static_argnums=(3,))
 
         # JAX-compiled update function
-        self._jax_update = jax.jit(fun=self._predict, static_argnums=(3, ))
+        self._jax_update = jax.jit(fun=self._predict, static_argnums=(3,))
 
-    def predict(self, input: ndarray, target: ndarray = None, return_probs: bool = False) \
-            -> ndarray:
+    def predict(
+        self, input: ndarray, target: Optional[ndarray] = None, return_probs: bool = False
+    ) -> ndarray:
         """
         Predict the class for the given inputs, and optionally update the weights.
 
@@ -286,10 +288,10 @@ class GLN(GLNBase):
 
         # Base predictions
         base_preds = self.base_predictor(input)
-        base_preds = jnp.asarray(base_preds, dtype=float)
+        base_preds = jnp.asarray(base_preds, dtype=jnp.float32)
 
         # Context
-        context = jnp.asarray(input, dtype=float)
+        context = jnp.asarray(input, dtype=jnp.float32)
 
         if target is None:
             # Predict without update
@@ -297,7 +299,7 @@ class GLN(GLNBase):
                                            return_probs)
 
         else:
-            target = jnp.asarray(target, dtype=int)
+            target = jnp.asarray(target, dtype=jnp.int32)
 
             # Predict with update
             self.params, prediction = self._jax_update(self.params,
@@ -324,7 +326,7 @@ class GLN(GLNBase):
         if target is not None:
             target = jnn.one_hot(target, num_classes=self.num_classes)
             if self.num_classes == 2:
-                target = target[:, 1].reshape(-1, 1)
+                target = target[:, 1:]
 
         # Layers
         if target is None:
@@ -339,7 +341,10 @@ class GLN(GLNBase):
                     logits=logits,
                     context=context,
                     target=target)
+
         logits = jnp.squeeze(logits, axis=-1)
+        if self.num_classes == 2:
+            logits = jnp.squeeze(logits, axis=1)
 
         # Output prediction
         if return_probs:

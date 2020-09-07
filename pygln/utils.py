@@ -69,9 +69,7 @@ def evaluate_mnist(model,
                    deskewed=True,
                    batch_size=1,
                    num_epochs=1,
-                   mnist_class=None,
-                   data_transform=None,
-                   result_transform=None):
+                   mnist_class=None):
     from tqdm import tqdm
 
     # get MNIST data as numpy arrays
@@ -83,11 +81,6 @@ def evaluate_mnist(model,
     if mnist_class is not None:
         y_train = (y_train == mnist_class).astype(np.int)
         y_test = (y_test == mnist_class).astype(np.int)
-
-    if data_transform:
-        X_train = data_transform(X_train)
-        y_train = data_transform(y_train)
-        X_test = data_transform(X_test)
 
     accuracy_after_each_epoch = []
 
@@ -114,8 +107,6 @@ def evaluate_mnist(model,
 
             # run forward with data
             pred = model.predict(X_batch)
-            if result_transform:
-                pred = result_transform(pred)
             outputs.append(pred)
 
         outputs = np.vstack(outputs)

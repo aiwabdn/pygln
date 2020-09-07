@@ -155,12 +155,12 @@ class Linear():
                  learning_rate: DynamicParameter,
                  pred_clipping: float,
                  weight_clipping: float,
-                 bias: bool = True,
-                 context_bias: bool = True):
+                 bias: bool,
+                 context_bias: bool):
         super().__init__()
 
         assert size > 0 and input_size > 0 and context_size > 0
-        assert context_map_size >= 2
+        assert context_map_size >= 1
         assert num_classes >= 2
 
         self.num_classes = num_classes if num_classes > 2 else 1
@@ -249,36 +249,36 @@ class GLN(GLNBase):
     NumPy implementation of Gated Linear Networks (https://arxiv.org/abs/1910.01526).
 
     Args:
-        layer_sizes (list[int >= 1]): List of layer output sizes.
+        layer_sizes (list[int >= 1]): List of layer output sizes, excluding last classification
+            layer which is added implicitly.
         input_size (int >= 1): Input vector size.
-        context_map_size (int >= 1): Context dimension, i.e. number of context halfspaces.
         num_classes (int >= 2): For values >2, turns GLN into a multi-class classifier by internally
-            creating N one-vs-all binary GLN classifiers and return the argmax as output class.
-        base_predictor (np.array[n] -> np.array[k]): If given, maps the n-dim input vector to a
-            corresponding k-dim vector of base predictions (could be a constant prior), instead of
+            creating a one-vs-all binary GLN classifier per class and return the argmax as output.
+        context_map_size (int >= 1): Context dimension, i.e. number of context halfspaces.
+        bias (bool): Whether to add a bias prediction in each layer.
+        context_bias (bool): Whether to use a random non-zero bias for context halfspace gating.
+        base_predictor (np.array[N] -> np.array[K]): If given, maps the N-dim input vector to a
+            corresponding K-dim vector of base predictions (could be a constant prior), instead of
             simply using the clipped input vector itself.
         learning_rate (float > 0.0): Update learning rate.
         pred_clipping (0.0 < float < 0.5): Clip predictions into [p, 1 - p] at each layer.
         weight_clipping (float > 0.0): Clip weights into [-w, w] after each update.
-        bias (bool): Whether to add a bias prediction in each layer.
-        context_bias (bool): Whether to use a random non-zero bias for context halfspace gating.
     """
     def __init__(self,
                  layer_sizes: Sequence[int],
                  input_size: int,
-                 context_map_size: int = 4,
                  num_classes: int = 2,
-                 base_predictor: Optional[
-                     Callable[[np.ndarray], np.ndarray]] = None,
-                 learning_rate: Union[DynamicParameter, float] = 1e-4,
-                 pred_clipping: float = 1e-3,
-                 weight_clipping: float = 5.0,
+                 context_map_size: int = 4,
                  bias: bool = True,
-                 context_bias: bool = True):
+                 context_bias: bool = False,
+                 base_predictor: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+                 learning_rate: Union[float, DynamicParameter] = 1e-3,
+                 pred_clipping: float = 1e-3,
+                 weight_clipping: float = 5.0):
 
-        super().__init__(layer_sizes, input_size, context_map_size,
-                         num_classes, base_predictor, learning_rate,
-                         pred_clipping, weight_clipping, bias, context_bias)
+        super().__init__(layer_sizes, input_size, num_classes,
+                         context_map_size, bias, context_bias, base_predictor,
+                         learning_rate, pred_clipping, weight_clipping)
 
         # Initialize layers
         self.layers = list()
@@ -295,7 +295,7 @@ class GLN(GLNBase):
         else:
             raise ValueError('Invalid learning rate')
 
-        for size in self.layer_sizes:
+        for size in (self.layer_sizes + (1,)):
             layer = Linear(size, previous_size, self.input_size,
                            self.context_map_size, self.num_classes,
                            self.learning_rate, self.pred_clipping,
@@ -305,7 +305,7 @@ class GLN(GLNBase):
 
     def predict(self,
                 input: np.ndarray,
-                target: np.ndarray = None,
+                target: Optional[np.ndarray] = None,
                 return_probs: bool = False) -> np.ndarray:
         """
         Predict the class for the given inputs, and optionally update the weights.
@@ -352,6 +352,9 @@ class GLN(GLNBase):
                                    target=target)
 
         logits = np.squeeze(logits, axis=1)
+        if self.num_classes == 2:
+            logits = np.squeeze(logits, axis=1)
+
         if return_probs:
             return sigmoid(logits)
         elif self.num_classes == 2:

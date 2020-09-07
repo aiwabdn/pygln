@@ -1,9 +1,9 @@
 import numpy as np
 import scipy.special
 import tensorflow as tf
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional, Sequence, Union
 
-from pygln.base import GLNBase
+from ..base import GLNBase
 
 
 class DynamicParameter(tf.Module):
@@ -61,7 +61,7 @@ class Linear(OnlineUpdateModule):
         super().__init__(learning_rate, pred_clipping, weight_clipping)
 
         assert size > 0 and input_size > 0 and context_size > 0
-        assert context_map_size >= 2
+        assert context_map_size >= 1
         assert num_classes >= 2
 
         self.size = size
@@ -187,37 +187,37 @@ class GLN(tf.Module, GLNBase):
     TensorFlow implementation of Gated Linear Networks (https://arxiv.org/abs/1910.01526).
 
     Args:
-        layer_sizes (list[int >= 1]): List of layer output sizes.
+        layer_sizes (list[int >= 1]): List of layer output sizes, excluding last classification
+            layer which is added implicitly.
         input_size (int >= 1): Input vector size.
-        context_map_size (int >= 1): Context dimension, i.e. number of context halfspaces.
         num_classes (int >= 2): For values >2, turns GLN into a multi-class classifier by internally
-            creating N one-vs-all binary GLN classifiers and return the argmax as output class.
-        base_predictor (np.array[n] -> np.array[k]): If given, maps the n-dim input vector to a
-            corresponding k-dim vector of base predictions (could be a constant prior), instead of
+            creating a one-vs-all binary GLN classifier per class and return the argmax as output.
+        context_map_size (int >= 1): Context dimension, i.e. number of context halfspaces.
+        bias (bool): Whether to add a bias prediction in each layer.
+        context_bias (bool): Whether to use a random non-zero bias for context halfspace gating.
+        base_predictor (np.array[N] -> np.array[K]): If given, maps the N-dim input vector to a
+            corresponding K-dim vector of base predictions (could be a constant prior), instead of
             simply using the clipped input vector itself.
         learning_rate (float > 0.0): Update learning rate.
         pred_clipping (0.0 < float < 0.5): Clip predictions into [p, 1 - p] at each layer.
         weight_clipping (float > 0.0): Clip weights into [-w, w] after each update.
-        bias (bool): Whether to add a bias prediction in each layer.
-        context_bias (bool): Whether to use a random non-zero bias for context halfspace gating.
     """
     def __init__(self,
                  layer_sizes: Sequence[int],
                  input_size: int,
-                 context_map_size: int = 4,
                  num_classes: int = 2,
-                 base_predictor: Optional[
-                     Callable[[np.ndarray], np.ndarray]] = None,
-                 learning_rate: float = 1e-4,
-                 pred_clipping: float = 1e-3,
-                 weight_clipping: float = 5.0,
+                 context_map_size: int = 4,
                  bias: bool = True,
-                 context_bias: bool = True):
+                 context_bias: bool = False,
+                 base_predictor: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+                 learning_rate: Union[float, DynamicParameter] = 1e-3,
+                 pred_clipping: float = 1e-3,
+                 weight_clipping: float = 5.0):
 
         tf.Module.__init__(self, name='GLN')
-        GLNBase.__init__(self, layer_sizes, input_size, context_map_size,
-                         num_classes, base_predictor, learning_rate,
-                         pred_clipping, weight_clipping, bias, context_bias)
+        GLNBase.__init__(self, layer_sizes, input_size, num_classes,
+                         context_map_size, bias, context_bias, base_predictor,
+                         learning_rate, pred_clipping, weight_clipping)
 
         # Learning rate as dynamic parameter
         if self.learning_rate == 'paper':
@@ -229,7 +229,7 @@ class GLN(tf.Module, GLNBase):
         # Initialize layers
         self.layers = list()
         previous_size = self.base_pred_size
-        for size in self.layer_sizes:
+        for size in (self.layer_sizes + (1,)):
             self.layers.append(
                 Linear(size=size,
                        input_size=previous_size,
@@ -267,8 +267,9 @@ class GLN(tf.Module, GLNBase):
             ],
             autograph=False)
 
-    def predict(self, input: np.ndarray, target: np.ndarray = None, return_probs: bool = False) \
-            -> np.ndarray:
+    def predict(
+      self, input: np.ndarray, target: Optional[np.ndarray] = None, return_probs: bool = False
+    ) -> np.ndarray:
         """
         Predict the class for the given inputs, and optionally update the weights.
 
@@ -304,6 +305,9 @@ class GLN(tf.Module, GLNBase):
                                      context=context,
                                      target=target)
 
+        if self.num_classes == 2:
+            logits = np.squeeze(logits, axis=1)
+
         if return_probs:
             return scipy.special.expit(logits)
         elif self.num_classes == 2:
@@ -325,13 +329,14 @@ class GLN(tf.Module, GLNBase):
 
         # Turn target class into one-hot
         if target is not None:
-            target = tf.one_hot(target, depth=self.num_classes)
+            target = tf.one_hot(target, depth=self.num_classes, axis=1)
             if self.num_classes == 2:
-                target = tf.reshape(target[:, 1], (-1, 1))
+                target = target[:, 1:]
 
         # Layers
         for layer in self.layers:
             logits = layer.predict(logits=logits,
                                    context=context,
                                    target=target)
+
         return tf.squeeze(logits, axis=-1)
